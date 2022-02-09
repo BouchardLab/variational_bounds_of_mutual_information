@@ -5,13 +5,13 @@ from torch import cuda
 from torch.nn import functional as F
 import torch.optim as optim
 import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
+from tqdm import tqdm
+
 
 #Snippet of code written to take benefits of GPU computation
 train_on_GPU = cuda.is_available()
 assert train_on_GPU, "please run this code on GPU (Google Collab is free and sufficient for instance)"
-import matplotlib.pyplot as plt
+
 
 # Separate Critic Implementation
 class MINE(nn.Module):
@@ -46,6 +46,7 @@ class MINE(nn.Module):
 
         return scores  # Each element i,j is a scalar in R. f(xi,proj_j)
 
+
 class baseline_MLP(nn.Module):
     def __init__(self, input_dim):
         super(baseline_MLP, self).__init__()
@@ -67,11 +68,13 @@ class baseline_MLP(nn.Module):
         # Output a scalar which is the log-baseline : log a(y)  for interpolated bound
         return res
 
+
 def reduce_logmeanexp_nodiag(x, axis=None):
     batch_size = x.size()[0]
     logsumexp = torch.logsumexp(x - torch.diag(np.inf * torch.ones(batch_size).cuda()),dim=[0,1])
     num_elem = batch_size * (batch_size - 1.)
     return logsumexp - torch.log(torch.tensor(num_elem).cuda())
+
 
 def tuba_lower_bound(scores, log_baseline=None):
     if log_baseline is not None:
@@ -80,9 +83,11 @@ def tuba_lower_bound(scores, log_baseline=None):
     marg_term=torch.exp(reduce_logmeanexp_nodiag(scores))
     return 1. + joint_term - marg_term
 
+
 def nwj_lower_bound(scores):
     # equivalent to: tuba_lower_bound(scores, log_baseline=1.)
     return tuba_lower_bound(scores - 1.)
+
 
 #Compute the Noise Constrastive Estimation (NCE) loss
 def infonce_lower_bound(scores):
@@ -190,6 +195,7 @@ def mlp(input_dim, hidden_dim, output_dim, n_layers=1, activation='relu'):
     # import pdb; pdb.set_trace()
     return nn.Sequential(*layers)
 
+
 class SeparableCritic(nn.Module):
     def __init__(self, x_dim, y_dim, embed_dim, n_layers, activation, **extra_kwargs):
         super(SeparableCritic, self).__init__()
@@ -203,6 +209,7 @@ class SeparableCritic(nn.Module):
         y_h = self.MLP_h(y)  # Batchsize x 32
         scores = torch.matmul(y_h, torch.transpose(x_g, 0, 1)) #Each element i,j is a scalar in R. f(xi,proj_j)
         return scores
+
 
 class ConcatCritic(nn.Module):
     def __init__(self, x_dim, y_dim, embed_dim, n_layers, activation, **extra_kwargs):
@@ -221,6 +228,7 @@ class ConcatCritic(nn.Module):
         scores = self._f(xy_pairs)
         return torch.transpose(torch.reshape(scores, [batch_size, batch_size]), 1, 0)
 
+
 class UnnormalizedBaseline(nn.Module):
     def __init__(self, input_dim, embed_dim=512, n_layers=1, activation='relu', **extra_kwargs):
         super(UnnormalizedBaseline, self).__init__()
@@ -233,17 +241,65 @@ class UnnormalizedBaseline(nn.Module):
         scores = self._f(x)
         return scores
 
+
 CRITICS = {
     'separable': SeparableCritic,
     'concat': ConcatCritic
 }
+
 
 BASELINES= {
     'constant': lambda: None,
     'unnormalized': UnnormalizedBaseline
 }
 
-def train_estimator(critic_params, data_params, mi_params):
+
+class Mi_estimator(object):
+    def __init__(self, critic_params, data_params, mi_params, opt_params):
+        self.mi_params = mi_params
+        self.critic = CRITICS[mi_params.get('critic', 'concat')](rho=None, **critic_params)
+        self.critic.cuda()
+        # import pdb; pdb.set_trace()
+        if mi_params.get('baseline', 'constant') == "constant":
+            self.baseline = BASELINES[mi_params.get('baseline', 'constant')]()
+        else:
+            self.baseline = BASELINES[mi_params.get('baseline', 'constant')](input_dim=data_params['dim'])
+            self.baseline.cuda()
+        if self.baseline is not None:
+            self.trainable_vars = list(self.critic.parameters()) + list(self.baseline.parameters())
+        else:
+            self.trainable_vars = list(self.critic.parameters())
+        self.optimizer = optim.Adam(self.trainable_vars, lr=opt_params['learning_rate'])
+
+    def fit(self, dataloader, epochs=50):
+        """
+        :param x: array [num_data, dim_x] Representing a dataset of samples from P_X
+        :param y: array [num_data, dim_y] Representing a dataset of samples from P_Y|X=x
+        :param epochs:
+        :return:
+        """
+        history_MI = []
+        for epoch in tqdm(range(epochs)):
+            MI_epoch = 0
+            for i_batch, sample_batch in enumerate(dataloader):
+                # import pdb; pdb.set_trace()
+                x, y = sample_batch
+                x = x.cuda()
+                y = y.cuda()
+                mi = estimate_mutual_information(self.mi_params['estimator'], x, y, self.critic, self.baseline,
+                                                 self.mi_params.get('alpha_logit'))
+                MI_loss = -mi
+                self.optimizer.zero_grad()
+                MI_loss.backward()
+                self.optimizer.step()
+                MI_epoch += mi
+            MI_epoch /= 50
+            history_MI.append(MI_epoch.detach().cpu().numpy())
+        print('Finished Training')
+        return np.asarray(history_MI)
+
+
+def train_estimator(critic_params, data_params, mi_params, opt_params):
     """Main training loop that estimates time-varying MI."""
     # Ground truth rho is only used by conditional critic
     critic = CRITICS[mi_params.get('critic', 'concat')](rho=None, **critic_params)
@@ -287,25 +343,15 @@ def train_estimator(critic_params, data_params, mi_params):
     print('Finished Training')
     return np.asarray(history_MI)
 
-    # Schedule of correlation over iterations
-    mis = mi_schedule(opt_params['iterations'])
-    rhos = mi_to_rho(data_params['dim'], mis)
-
-    estimates = []
-    for i in range(opt_params['iterations']):
-        estimates.append(train_step(rhos[i], data_params, mi_params).numpy())
-
-    return np.array(estimates)
-
 
 # Add interpolated bounds
 def sigmoid(x):
   return 1/(1. + np.exp(-x))
 
 
-def sample_correlated_gaussian(rho=0.5, dim=20, batch_size=64):
+def sample_correlated_gaussian(rho=0.5, dim=20, data_size=10000):
     """Generate samples from a correlated Gaussian distribution."""
-    x, eps = torch.split(torch.normal(0, 1, size=(batch_size, 2 * dim)), dim, dim=1)
+    x, eps = torch.split(torch.normal(0, 1, size=(data_size, 2 * dim)), dim, dim=1)
     y = rho * x + torch.sqrt(torch.tensor(1. - rho ** 2, dtype=torch.float32)) * eps
     return x, y
 
@@ -318,87 +364,18 @@ def mi_schedule(n_iter):
     mis = np.round(np.linspace(0.5, 5.5 - 1e-9, n_iter)) * 2.0  # 0.1
     return mis.astype(np.float32)
 
-critic_type = 'concat' # or 'separable'
 
-estimators = {
-    'NWJ': dict(estimator='nwj', critic=critic_type, baseline='constant'),
-    'TUBA': dict(estimator='tuba', critic=critic_type, baseline='unnormalized'),
-    'InfoNCE': dict(estimator='infonce', critic=critic_type, baseline='constant'),
-}
-for alpha_logit in [-5., 0., 5.]:
-    name = 'alpha=%.2f' % sigmoid(alpha_logit)
-    estimators[name] = dict(estimator='interpolated', critic=critic_type,
-                          alpha_logit=alpha_logit, baseline='unnormalized')
-
+# critic_type = 'concat' # or 'separable'
+# estimators = {
+#     'NWJ': dict(estimator='nwj', critic=critic_type, baseline='constant'),
+#     'TUBA': dict(estimator='tuba', critic=critic_type, baseline='unnormalized'),
+#     'InfoNCE': dict(estimator='infonce', critic=critic_type, baseline='constant'),
+# }
+# for alpha_logit in [-5., 0., 5.]:
+#     name = 'alpha=%.2f' % sigmoid(alpha_logit)
+#     estimators[name] = dict(estimator='interpolated', critic=critic_type,
+#                           alpha_logit=alpha_logit, baseline='unnormalized')
 
 
 if __name__ == "__main__":
-    # plt.figure(figsize=(6, 3))
-    # for i, rho in enumerate([0.5, 0.99]):
-    #     plt.subplot(1, 2, i + 1)
-    #     x, y = sample_correlated_gaussian(batch_size=500, dim=1, rho=rho)
-    #     plt.scatter(x[:, 0], y[:, 0])
-    #     plt.title(r'$\rho=%.2f$,  $I(X; Y)=%.1f$' % (rho, rho_to_mi(1, rho)))
-    #     plt.xlim(-3, 3);
-    #     plt.ylim(-3, 3);
-    # plt.show()
-    #
-    # print(f'For a rho fixed at 0.7 and variables of dimensionality 20, the true MI is {rho_to_mi(20, 0.7)}')
-
-    data_params = {
-        'dim': 20,
-        'batch_size': 256,
-        'rho': 0.7
-    }
-
-    critic_params = {
-        'n_layers': 2,
-        'x_dim': 20,
-        'embed_dim': 32,
-        'y_dim': 20,
-        'activation': 'relu',
-    }
-
-    opt_params = {
-        'iterations': 20000,
-        'n_epochs': 100,
-        'learning_rate': 5e-4,
-    }
-
-    estimates = {}
-    for estimator, mi_params in estimators.items():
-        print("Training %s..." % estimator)
-        estimates[estimator] = train_estimator(critic_params, data_params, mi_params)
-
-    # Smooting span for Exponential Moving Average
-    EMA_SPAN = 20
-
-    # Ground truth MI
-    mi_true = rho_to_mi(data_params['dim'], data_params['rho'])
-
-    nrows = min(2, len(estimates))
-    ncols = int(np.ceil(len(estimates) / float(nrows)))
-    fig, axs = plt.subplots(nrows, ncols, figsize=(2.7 * ncols, 3 * nrows))
-    if len(estimates) == 1:
-        axs = [axs]
-    axs = np.ravel(axs)
-
-    names = np.sort(list(estimators.keys()))
-
-    for i, name in enumerate(names):
-        plt.sca(axs[i])
-        # Plot estimated MI and smoothed MI
-        mis = estimates[name]
-        mis_smooth = pd.Series(mis).ewm(span=EMA_SPAN).mean()
-        p1 = plt.plot(mis, alpha=0.3)[0]
-        plt.plot(mis_smooth, c=p1.get_color())
-    if i == len(estimates) - ncols:
-        plt.xlabel('steps')
-        plt.ylabel('Mutual information (nats)')
-    plt.legend(loc='best', fontsize=8, framealpha=0.0)
-    plt.title("Mutual information estimation with bound '{}', true MI is {}".format(name, np.round(mi_true,2)))
-    plt.gcf().tight_layout()
-    plt.show()
-
-
-    import pdb; pdb.set_trace()
+    pass
