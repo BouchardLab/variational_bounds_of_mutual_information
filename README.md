@@ -1,6 +1,7 @@
-# variational_bounds_of_mutual_information
+# VBMI: Variational Bounds of Mutual Information
 
-We provide the code of various MI estimates in Mi_estimator.py. The-Mi_estimator class is provided to estimate Mutual information. We also provide a correlated guassian example 
+We provide the code of various MI estimates in `mi_estimator.py`.
+The `MIEstimator` class is provided to estimate Mutual information. We also provide a correlated gaussian example 
 to illustrate how to estimate MI with ground truth of MI.
 
 ## End-to-End Examples
@@ -18,3 +19,5 @@ We have access to the mutual information:
 First go the example directory
 ```
 cd examples/correlated_gaussians/
+```
+
