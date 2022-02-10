@@ -254,7 +254,7 @@ BASELINES= {
 }
 
 
-class Mi_estimator(object):
+class MIEstimator(object):
     def __init__(self, critic_params, data_params, mi_params, opt_params):
         self.mi_params = mi_params
         self.critic = CRITICS[mi_params.get('critic', 'concat')](rho=None, **critic_params)
