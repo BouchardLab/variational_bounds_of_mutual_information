@@ -1,0 +1,52 @@
+###################################
+# Mac OS
+###################################
+
+# general
+.DS_Store
+.DS_Store?
+Icon
+
+# thumbnails
+._*
+
+# temporary autosave files
+*~
+
+
+###################################
+# Python
+###################################
+
+# python cache files
+__pycache__
+.ipynb_checkpoints
+.~*.ipynb
+
+# developer mode
+*.egg-info
+
+
+###################################
+# Code editor, etc. 
+###################################
+
+.idea
+
+
+###################################
+# Custom
+###################################
+
+# test output directories
+_test
+_out
+
+# custom log directories
+_log
+_log_nb
+
+# various log files 
+*.log
+*.out
+
