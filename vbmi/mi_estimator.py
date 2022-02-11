@@ -10,7 +10,8 @@ from tqdm import tqdm
 
 #Snippet of code written to take benefits of GPU computation
 train_on_GPU = cuda.is_available()
-assert train_on_GPU, "please run this code on GPU (Google Collab is free and sufficient for instance)"
+print(f'training on GPU: {train_on_GPU}')
+# assert train_on_GPU, "please run this code on GPU (Google Collab is free and sufficient for instance)"
 
 
 # Separate Critic Implementation
