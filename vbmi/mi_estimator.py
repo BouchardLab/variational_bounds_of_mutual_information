@@ -69,11 +69,11 @@ class baseline_MLP(nn.Module):
         return res
 
 
-def reduce_logmeanexp_nodiag(x, axis=None):
+def reduce_logmeanexp_nodiag(x, device, axis=None):
     batch_size = x.size()[0]
-    logsumexp = torch.logsumexp(x - torch.diag(np.inf * torch.ones(batch_size).cuda()),dim=[0,1])
+    logsumexp = torch.logsumexp(x - torch.diag(np.inf * torch.ones(batch_size).to(device)),dim=[0,1])
     num_elem = batch_size * (batch_size - 1.)
-    return logsumexp - torch.log(torch.tensor(num_elem).cuda())
+    return logsumexp - torch.log(torch.tensor(num_elem).to(device))
 
 
 def tuba_lower_bound(scores, log_baseline=None):
@@ -98,17 +98,17 @@ def infonce_lower_bound(scores):
     return mi
 
 
-def log_interpolate(log_a, log_b, alpha_logit):
+def log_interpolate(log_a, log_b, alpha_logit, device):
     '''Numerically stable implmentation of log(alpha * a + (1-alpha) *b)
     Compute the log baseline for the interpolated bound
     baseline is a(y)'''
-    log_alpha = -F.softplus(torch.tensor(-alpha_logit).cuda())
-    log_1_minus_alpha = -F.softplus(torch.tensor(alpha_logit).cuda())
+    log_alpha = -F.softplus(torch.tensor(-alpha_logit).to(device))
+    log_1_minus_alpha = -F.softplus(torch.tensor(alpha_logit).to(device))
     y = torch.logsumexp(torch.stack((log_alpha + log_a, log_1_minus_alpha + log_b)), dim=0)
     return y
 
 
-def compute_log_loomean(scores):
+def compute_log_loomean(scores, device):
     '''Compute the log leave one out mean of the exponentiated scores'''
     max_scores, _ = torch.max(scores, dim=1, keepdim=True)
 
@@ -117,7 +117,7 @@ def compute_log_loomean(scores):
 
     d_not_ok = torch.eq(d, 0.)
     d_ok = ~d_not_ok
-    safe_d = torch.where(d_ok, d, torch.ones_like(d).cuda())  # Replace zeros by 1 in d
+    safe_d = torch.where(d_ok, d, torch.ones_like(d).to(device))  # Replace zeros by 1 in d
 
     loo_lse = scores + (safe_d + torch.log(-torch.expm1(-safe_d)))  # Stable implementation of softplus_inverse
     loo_lme = loo_lse - np.log(scores.size()[1] - 1.)
@@ -255,16 +255,17 @@ BASELINES= {
 
 
 class MIEstimator(object):
-    def __init__(self, critic_params, data_params, mi_params, opt_params):
+    def __init__(self, critic_params, data_params, mi_params, opt_params, device):
         self.mi_params = mi_params
+        self.device = device
         self.critic = CRITICS[mi_params.get('critic', 'concat')](rho=None, **critic_params)
-        self.critic.cuda()
+        self.critic.to(self.device)
         # import pdb; pdb.set_trace()
         if mi_params.get('baseline', 'constant') == "constant":
             self.baseline = BASELINES[mi_params.get('baseline', 'constant')]()
         else:
             self.baseline = BASELINES[mi_params.get('baseline', 'constant')](input_dim=data_params['dim'])
-            self.baseline.cuda()
+            self.baseline.to(self.device)
         if self.baseline is not None:
             self.trainable_vars = list(self.critic.parameters()) + list(self.baseline.parameters())
         else:
@@ -284,8 +285,8 @@ class MIEstimator(object):
             for i_batch, sample_batch in enumerate(dataloader):
                 # import pdb; pdb.set_trace()
                 x, y = sample_batch
-                x = x.cuda()
-                y = y.cuda()
+                x = x.to(self.device)
+                y = y.to(self.device)
                 mi = estimate_mutual_information(self.mi_params['estimator'], x, y, self.critic, self.baseline,
                                                  self.mi_params.get('alpha_logit'))
                 MI_loss = -mi
@@ -299,17 +300,17 @@ class MIEstimator(object):
         return np.asarray(history_MI)
 
 
-def train_estimator(critic_params, data_params, mi_params, opt_params):
+def train_estimator(critic_params, data_params, mi_params, opt_params, device):
     """Main training loop that estimates time-varying MI."""
     # Ground truth rho is only used by conditional critic
     critic = CRITICS[mi_params.get('critic', 'concat')](rho=None, **critic_params)
-    critic.cuda()
+    critic.to(device)
     # import pdb; pdb.set_trace()
     if mi_params.get('baseline', 'constant') == "constant":
         baseline = BASELINES[mi_params.get('baseline', 'constant')]()
     else:
         baseline = BASELINES[mi_params.get('baseline', 'constant')](input_dim=data_params['dim'])
-        baseline.cuda()
+        baseline.to(device)
 
     if baseline is not None:
         trainable_vars = list(critic.parameters()) + list(baseline.parameters())
@@ -322,8 +323,8 @@ def train_estimator(critic_params, data_params, mi_params, opt_params):
         MI_epoch = 0
         for i in range(50):  # Mimic a dataset of size 50*Batch_Size
             x, y = sample_correlated_gaussian(dim=data_params['dim'], rho=data_params['rho'], batch_size=data_params['batch_size'])
-            x = x.cuda()
-            y = y.cuda()
+            x = x.to(device)
+            y = y.to(device)
             mi = estimate_mutual_information(mi_params['estimator'], x, y, critic, baseline, mi_params.get('alpha_logit'))
             MI_loss = -mi
 
