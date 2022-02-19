@@ -12,7 +12,6 @@ from tqdm import tqdm
 train_on_GPU = cuda.is_available()
 print(f'training on GPU: {train_on_GPU}')
 # device = 'cuda' if train_on_GPU else 'cpu'
-device = 'cpu'
 # assert train_on_GPU, "please run this code on GPU (Google Collab is free and sufficient for instance)"
 
 
@@ -72,7 +71,7 @@ class baseline_MLP(nn.Module):
         return res
 
 
-def reduce_logmeanexp_nodiag(x, device=device, axis=None):
+def reduce_logmeanexp_nodiag(x, device, axis=None):
     batch_size = x.size()[0]
     logsumexp = torch.logsumexp(x - torch.diag(np.inf * torch.ones(batch_size).to(device)),dim=[0,1])
     num_elem = batch_size * (batch_size - 1.)
@@ -101,7 +100,7 @@ def infonce_lower_bound(scores):
     return mi
 
 
-def log_interpolate(log_a, log_b, alpha_logit, device=device):
+def log_interpolate(log_a, log_b, alpha_logit, device):
     '''Numerically stable implmentation of log(alpha * a + (1-alpha) *b)
     Compute the log baseline for the interpolated bound
     baseline is a(y)'''
@@ -111,7 +110,7 @@ def log_interpolate(log_a, log_b, alpha_logit, device=device):
     return y
 
 
-def compute_log_loomean(scores, device=device):
+def compute_log_loomean(scores, device):
     '''Compute the log leave one out mean of the exponentiated scores'''
     max_scores, _ = torch.max(scores, dim=1, keepdim=True)
 
@@ -304,7 +303,7 @@ class MIEstimator(object):
         return np.asarray(history_MI)
 
 
-def train_estimator(critic_params, data_params, mi_params, opt_params, device=device):
+def train_estimator(critic_params, data_params, mi_params, opt_params, device):
     """Main training loop that estimates time-varying MI."""
     # Ground truth rho is only used by conditional critic
     critic = CRITICS[mi_params.get('critic', 'concat')](rho=None, **critic_params)
