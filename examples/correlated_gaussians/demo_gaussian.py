@@ -8,7 +8,7 @@ import pandas as pd
 from torch.utils.data import Dataset, DataLoader
 import sys
 sys.path.append("../../")
-from Mi_estimator import train_estimator, rho_to_mi, sample_correlated_gaussian, Mi_estimator
+from vbmi.mi_estimator import train_estimator, rho_to_mi, sample_correlated_gaussian, MIEstimator
 
 
 class JointData(Dataset):
@@ -59,7 +59,7 @@ if __name__ == "__main__":
     estimates = {}
     for estimator, mi_params in estimators.items():
         print("Training %s..." % estimator)
-        mi_est = Mi_estimator(critic_params, data_params, mi_params, opt_params)
+        mi_est = MIEstimator(critic_params, data_params, mi_params, opt_params, device='cuda')
         estimates[estimator] = mi_est.fit(dataloader, epochs=opt_params["n_epochs"])
 
     # Smooting span for Exponential Moving Average
