@@ -50,3 +50,5 @@ _log_nb
 *.log
 *.out
 
+build
+dist
