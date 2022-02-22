@@ -10,8 +10,9 @@ from tqdm import tqdm
 
 #Snippet of code written to take benefits of GPU computation
 train_on_GPU = cuda.is_available()
-print(f'training on GPU: {train_on_GPU}')
+print(f'GPU available: {train_on_GPU}')
 # device = 'cuda' if train_on_GPU else 'cpu'
+device_ = None
 # assert train_on_GPU, "please run this code on GPU (Google Collab is free and sufficient for instance)"
 
 
@@ -71,9 +72,12 @@ class baseline_MLP(nn.Module):
         return res
 
 
-def reduce_logmeanexp_nodiag(x, device, axis=None):
+def reduce_logmeanexp_nodiag(x, device=None, axis=None):
     batch_size = x.size()[0]
-    logsumexp = torch.logsumexp(x - torch.diag(np.inf * torch.ones(batch_size).to(device)),dim=[0,1])
+    if device is None:
+        device = device_
+
+    logsumexp = torch.logsumexp(x.to(device) - torch.diag(np.inf * torch.ones(batch_size).to(device)),dim=[0,1])
     num_elem = batch_size * (batch_size - 1.)
     return logsumexp - torch.log(torch.tensor(num_elem).to(device))
 
@@ -100,18 +104,22 @@ def infonce_lower_bound(scores):
     return mi
 
 
-def log_interpolate(log_a, log_b, alpha_logit, device):
+def log_interpolate(log_a, log_b, alpha_logit, device=None):
     '''Numerically stable implmentation of log(alpha * a + (1-alpha) *b)
     Compute the log baseline for the interpolated bound
     baseline is a(y)'''
+    if device is None:
+        device = device_
     log_alpha = -F.softplus(torch.tensor(-alpha_logit).to(device))
     log_1_minus_alpha = -F.softplus(torch.tensor(alpha_logit).to(device))
     y = torch.logsumexp(torch.stack((log_alpha + log_a, log_1_minus_alpha + log_b)), dim=0)
     return y
 
 
-def compute_log_loomean(scores, device):
+def compute_log_loomean(scores, device=None):
     '''Compute the log leave one out mean of the exponentiated scores'''
+    if device is None:
+        device = device_
     max_scores, _ = torch.max(scores, dim=1, keepdim=True)
 
     lse_minus_max = torch.logsumexp(scores - max_scores, dim=1, keepdim=True)
@@ -188,6 +196,7 @@ def estimate_mutual_information(estimator, x, y, critic_fn,
 
 
 def mlp(input_dim, hidden_dim, output_dim, n_layers=1, activation='relu'):
+    print(input_dim, hidden_dim, output_dim, n_layers)
     if activation == 'relu':
         activation_f = nn.ReLU()
     layers = [nn.Linear(input_dim, hidden_dim), activation_f]
@@ -199,29 +208,48 @@ def mlp(input_dim, hidden_dim, output_dim, n_layers=1, activation='relu'):
 
 
 class SeparableCritic(nn.Module):
-    def __init__(self, x_dim, y_dim, embed_dim, n_layers, activation, **extra_kwargs):
+    """
+    x_dim is original dimension
+    proj_dim is projected dimension for eDCA
+    """
+    def __init__(self, x_dim, y_dim, embed_dim, n_layers, activation, proj_dim=None, **extra_kwargs):
         super(SeparableCritic, self).__init__()
-        self._g = mlp(x_dim, embed_dim, n_layers, activation)
-        self._h = mlp(y_dim, embed_dim, n_layers, activation)
+        if proj_dim != None:
+            self._proj = nn.Linear(x_dim, proj_dim, bias=False)
+        else:
+            self._proj = None
+        # Note 32 is hard coded for the output dimensions of g and h
+        self._g = mlp(proj_dim, embed_dim, 32, n_layers, activation)
+        self._h = mlp(y_dim, embed_dim, 32, n_layers, activation)
 
     def forward(self, x, y):
-        x = x.view(-1, self.x_dim)
-        y = y.view(-1, self.y_dim)
-        x_g = self.MLP_g(x)  # Batchsize x 32
-        y_h = self.MLP_h(y)  # Batchsize x 32
+        batch_size = x.shape[0]
+        x = x.view(batch_size, -1)
+        y = y.view(batch_size, -1)
+        if self._proj != None:
+            x = self._proj(x)
+        x_g = self._g(x)  # Batchsize x 32
+        y_h = self._h(y)  # Batchsize x 32
         scores = torch.matmul(y_h, torch.transpose(x_g, 0, 1)) #Each element i,j is a scalar in R. f(xi,proj_j)
         return scores
 
 
 class ConcatCritic(nn.Module):
-    def __init__(self, x_dim, y_dim, embed_dim, n_layers, activation, **extra_kwargs):
+    def __init__(self, x_dim, y_dim, embed_dim, n_layers, activation, proj_dim=None, **extra_kwargs):
         super(ConcatCritic, self).__init__()
         # output is scalar score
-        self._f = mlp(x_dim+y_dim, embed_dim, 1, n_layers, activation)
+        if proj_dim != None:
+            self._proj = nn.Linear(x_dim, proj_dim, bias=False)
+        else:
+            self._proj = None
+            proj_dim = x_dim
+        self._f = mlp(proj_dim+y_dim, embed_dim, 1, n_layers, activation)
 
     def forward(self, x, y):
         batch_size = x.shape[0]
         # Tile all possible combinations of x and y
+        if self._proj != None:
+            x = self._proj(x)
         x_tiled = torch.tile(x[None, :],  (batch_size, 1, 1))
         y_tiled = torch.tile(y[:, None],  (1, batch_size, 1))
         # xy is [batch_size * batch_size, x_dim + y_dim]
@@ -260,8 +288,11 @@ class MIEstimator(object):
     def __init__(self, critic_params, data_params, mi_params, opt_params, device):
         self.mi_params = mi_params
         self.device = device
+        global device_
+        device_ = self.device
         self.critic = CRITICS[mi_params.get('critic', 'concat')](rho=None, **critic_params)
         self.critic.to(self.device)
+        print(self.critic._proj.weight.data.shape)
         # import pdb; pdb.set_trace()
         if mi_params.get('baseline', 'constant') == "constant":
             self.baseline = BASELINES[mi_params.get('baseline', 'constant')]()
@@ -297,14 +328,16 @@ class MIEstimator(object):
                 MI_loss.backward()
                 self.optimizer.step()
                 MI_epoch += mi
-            MI_epoch /= 50
+            MI_epoch /= (i_batch + 1)
             history_MI.append(MI_epoch.detach().cpu().numpy())
         print('Finished Training')
         return np.asarray(history_MI)
 
 
-def train_estimator(critic_params, data_params, mi_params, opt_params, device):
+def train_estimator(critic_params, data_params, mi_params, opt_params, device=None):
     """Main training loop that estimates time-varying MI."""
+    if device is None:
+        device = device_
     # Ground truth rho is only used by conditional critic
     critic = CRITICS[mi_params.get('critic', 'concat')](rho=None, **critic_params)
     critic.to(device)
