@@ -317,7 +317,7 @@ BASELINES = {
 
 class MIEstimator(object):
     def __init__(self, critic_params, data_params, mi_params, opt_params,
-                 device, proj_dim=None, proj_init=None):
+                 device, proj_dim=None, proj_init=None, tqdm_disable=True):
         self.mi_params = mi_params
         self.device = device
         global device_
@@ -346,6 +346,7 @@ class MIEstimator(object):
             self.trainable_vars += list(self.proj.parameters())
         self.optimizer = optim.Adam(
             self.trainable_vars, lr=opt_params['learning_rate'])
+        self.tqdm_disable = tqdm_disable
 
     def fit(self, dataloader, epochs=50):
         """
@@ -355,7 +356,7 @@ class MIEstimator(object):
         :return:
         """
         history_MI = []
-        for epoch in tqdm(range(epochs)):
+        for epoch in tqdm(range(epochs), disable=self.tqdm_disable):
             MI_epoch = 0
             for i_batch, sample_batch in enumerate(dataloader):
                 # import pdb; pdb.set_trace()
