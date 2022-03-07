@@ -8,7 +8,7 @@ import numpy as np
 from tqdm import tqdm
 
 
-#Snippet of code written to take benefits of GPU computation
+# Snippet of code written to take benefits of GPU computation
 train_on_GPU = cuda.is_available()
 print(f'GPU available: {train_on_GPU}')
 # device = 'cuda' if train_on_GPU else 'cpu'
@@ -77,16 +77,17 @@ def reduce_logmeanexp_nodiag(x, device=None, axis=None):
     if device is None:
         device = device_
 
-    logsumexp = torch.logsumexp(x.to(device) - torch.diag(np.inf * torch.ones(batch_size).to(device)),dim=[0,1])
+    logsumexp = torch.logsumexp(x.to(
+        device) - torch.diag(np.inf * torch.ones(batch_size).to(device)), dim=[0, 1])
     num_elem = batch_size * (batch_size - 1.)
     return logsumexp - torch.log(torch.tensor(num_elem).to(device))
 
 
 def tuba_lower_bound(scores, log_baseline=None):
     if log_baseline is not None:
-        scores -= log_baseline[:,None]
-    joint_term= torch.mean(torch.diag(scores))
-    marg_term=torch.exp(reduce_logmeanexp_nodiag(scores))
+        scores -= log_baseline[:, None]
+    joint_term = torch.mean(torch.diag(scores))
+    marg_term = torch.exp(reduce_logmeanexp_nodiag(scores))
     return 1. + joint_term - marg_term
 
 
@@ -95,11 +96,42 @@ def nwj_lower_bound(scores):
     return tuba_lower_bound(scores - 1.)
 
 
-#Compute the Noise Constrastive Estimation (NCE) loss
+# Compute the Noise Constrastive Estimation (NCE) loss
 def infonce_lower_bound(scores):
     '''Bound from Van Den Oord and al. (2018)'''
-    nll = torch.mean( torch.diag(scores) - torch.logsumexp(scores,dim=1))
-    k =scores.size()[0]
+    nll = torch.mean(torch.diag(scores) - torch.logsumexp(scores, dim=1))
+    k = scores.size()[0]
+    mi = np.log(k) + nll
+    return mi
+
+
+def infonce_lower_bound_weighted_regularization(scores, lamb=4e-2):
+    '''Bound from Van Den Oord and al. (2018)
+    regularization from Bachman et al. (2019)'''
+    scores = scores + lamb * scores**2
+    nll = torch.mean(torch.diag(scores) - torch.logsumexp(scores, dim=1))
+    k = scores.size()[0]
+    mi = np.log(k) + nll
+    return mi
+
+
+def infonce_lower_bound_soft_clipping(scores, c=20):
+    '''Bound from Van Den Oord and al. (2018)
+    clipping from Bachman et al. (2019)'''
+    scores = c * np.tanh(scores / c)
+    nll = torch.mean(torch.diag(scores) - torch.logsumexp(scores, dim=1))
+    k = scores.size()[0]
+    mi = np.log(k) + nll
+    return mi
+
+
+def infonce_lower_bound_weighted_clipping(scores, lamb=4e-2, c=20):
+    '''Bound from Van Den Oord and al. (2018)
+    clipping from Bachman et al. (2019)'''
+    scores = scores + lamb * scores**2
+    scores = c * torch.tanh(scores / c)
+    nll = torch.mean(torch.diag(scores) - torch.logsumexp(scores, dim=1))
+    k = scores.size()[0]
     mi = np.log(k) + nll
     return mi
 
@@ -112,7 +144,8 @@ def log_interpolate(log_a, log_b, alpha_logit, device=None):
         device = device_
     log_alpha = -F.softplus(torch.tensor(-alpha_logit).to(device))
     log_1_minus_alpha = -F.softplus(torch.tensor(alpha_logit).to(device))
-    y = torch.logsumexp(torch.stack((log_alpha + log_a, log_1_minus_alpha + log_b)), dim=0)
+    y = torch.logsumexp(torch.stack(
+        (log_alpha + log_a, log_1_minus_alpha + log_b)), dim=0)
     return y
 
 
@@ -127,9 +160,11 @@ def compute_log_loomean(scores, device=None):
 
     d_not_ok = torch.eq(d, 0.)
     d_ok = ~d_not_ok
-    safe_d = torch.where(d_ok, d, torch.ones_like(d).to(device))  # Replace zeros by 1 in d
+    safe_d = torch.where(d_ok, d, torch.ones_like(
+        d).to(device))  # Replace zeros by 1 in d
 
-    loo_lse = scores + (safe_d + torch.log(-torch.expm1(-safe_d)))  # Stable implementation of softplus_inverse
+    # Stable implementation of softplus_inverse
+    loo_lse = scores + (safe_d + torch.log(-torch.expm1(-safe_d)))
     loo_lme = loo_lse - np.log(scores.size()[1] - 1.)
     return loo_lme
 
@@ -148,51 +183,58 @@ def interpolated_lower_bound(scores, baseline, alpha_logit):
     nce_baseline = compute_log_loomean(scores)
 
     interpolated_baseline = log_interpolate(nce_baseline,
-                                            baseline[:, None].repeat(1, batch_size),
+                                            baseline[:, None].repeat(
+                                                1, batch_size),
                                             alpha_logit)  # Interpolate NCE baseline with a learnt baseline
 
     # Marginal distribution term
-    critic_marg = scores - torch.diag(interpolated_baseline)[:, None]  # None is equivalent to newaxis
+    # None is equivalent to newaxis
+    critic_marg = scores - torch.diag(interpolated_baseline)[:, None]
     marg_term = torch.exp(reduce_logmeanexp_nodiag(critic_marg))
 
     # Joint distribution term
     critic_joint = torch.diag(scores)[:, None] - interpolated_baseline
-    joint_term = (torch.sum(critic_joint) - torch.sum(torch.diag(critic_joint))) / (batch_size * (batch_size - 1.))
+    joint_term = (torch.sum(critic_joint) - torch.sum(torch.diag(critic_joint))
+                  ) / (batch_size * (batch_size - 1.))
     return 1 + joint_term - marg_term
 
 
 def estimate_mutual_information(estimator, x, y, critic_fn,
                                 baseline_fn=None, alpha_logit=None):
-      """Estimate variational lower bounds on mutual information.
+    """Estimate variational lower bounds on mutual information.
 
-      Args:
-        estimator: string specifying estimator, one of:
-          'nwj', 'infonce', 'tuba', 'js', 'interpolated'
-        x: [batch_size, dim_x] Tensor
-        y: [batch_size, dim_y] Tensor
-        critic_fn: callable that takes x and y as input and outputs critic scores
-          output shape is a [batch_size, batch_size] matrix
-        baseline_fn (optional): callable that takes y as input
-          outputs a [batch_size]  or [batch_size, 1] vector
-        alpha_logit (optional): logit(alpha) for interpolated bound
+    Args:
+    estimator: string specifying estimator, one of:
+      'nwj', 'infonce', 'tuba', 'js', 'interpolated'
+    x: [batch_size, dim_x] Tensor
+    y: [batch_size, dim_y] Tensor
+    critic_fn: callable that takes x and y as input and outputs critic scores
+      output shape is a [batch_size, batch_size] matrix
+    baseline_fn (optional): callable that takes y as input
+      outputs a [batch_size]  or [batch_size, 1] vector
+    alpha_logit (optional): logit(alpha) for interpolated bound
 
-      Returns:
-        scalar estimate of mutual information
-      """
-      scores = critic_fn(x, y)
-      if baseline_fn is not None:
+    Returns:
+    scalar estimate of mutual information
+    """
+    scores = critic_fn(x, y)
+    if baseline_fn is not None:
         # Some baselines' output is (batch_size, 1) which we remove here.
         log_baseline = torch.squeeze(baseline_fn(y))
-      if estimator == 'infonce':
+    if estimator == 'infonce':
         mi = infonce_lower_bound(scores)
-      elif estimator == 'nwj':
+    elif estimator == 'infonce_weighted_clipping':
+        mi = infonce_lower_bound_weighted_clipping(scores)
+    elif estimator == 'infonce_weighted_regularization':
+        mi = infonce_weighted_regularization(scores)
+    elif estimator == 'nwj':
         mi = nwj_lower_bound(scores)
-      elif estimator == 'tuba':
+    elif estimator == 'tuba':
         mi = tuba_lower_bound(scores, log_baseline)
-      elif estimator == 'interpolated':
+    elif estimator == 'interpolated':
         assert alpha_logit is not None, "Must specify alpha_logit for interpolated bound."
         mi = interpolated_lower_bound(scores, log_baseline, alpha_logit)
-      return mi
+    return mi
 
 
 def mlp(input_dim, hidden_dim, output_dim, n_layers=1, activation='relu'):
@@ -210,50 +252,39 @@ def mlp(input_dim, hidden_dim, output_dim, n_layers=1, activation='relu'):
 class SeparableCritic(nn.Module):
     """
     x_dim is original dimension
-    proj_dim is projected dimension for eDCA
     """
-    def __init__(self, x_dim, y_dim, embed_dim, n_layers, activation, proj_dim=None, **extra_kwargs):
+
+    def __init__(self, x_dim, y_dim, embed_dim, n_layers, activation, **extra_kwargs):
         super(SeparableCritic, self).__init__()
-        if proj_dim != None:
-            self._proj = nn.Linear(x_dim, proj_dim, bias=False)
-        else:
-            self._proj = None
         # Note 32 is hard coded for the output dimensions of g and h
-        self._g = mlp(proj_dim, embed_dim, 32, n_layers, activation)
+        self._g = mlp(x_dim, embed_dim, 32, n_layers, activation)
         self._h = mlp(y_dim, embed_dim, 32, n_layers, activation)
 
     def forward(self, x, y):
         batch_size = x.shape[0]
         x = x.view(batch_size, -1)
         y = y.view(batch_size, -1)
-        if self._proj != None:
-            x = self._proj(x)
         x_g = self._g(x)  # Batchsize x 32
         y_h = self._h(y)  # Batchsize x 32
-        scores = torch.matmul(y_h, torch.transpose(x_g, 0, 1)) #Each element i,j is a scalar in R. f(xi,proj_j)
+        # Each element i,j is a scalar in R. f(xi,proj_j)
+        scores = torch.matmul(y_h, torch.transpose(x_g, 0, 1))
         return scores
 
 
 class ConcatCritic(nn.Module):
-    def __init__(self, x_dim, y_dim, embed_dim, n_layers, activation, proj_dim=None, **extra_kwargs):
+    def __init__(self, x_dim, y_dim, embed_dim, n_layers, activation, **extra_kwargs):
         super(ConcatCritic, self).__init__()
         # output is scalar score
-        if proj_dim != None:
-            self._proj = nn.Linear(x_dim, proj_dim, bias=False)
-        else:
-            self._proj = None
-            proj_dim = x_dim
-        self._f = mlp(proj_dim+y_dim, embed_dim, 1, n_layers, activation)
+        self._f = mlp(x_dim + y_dim, embed_dim, 1, n_layers, activation)
 
     def forward(self, x, y):
         batch_size = x.shape[0]
         # Tile all possible combinations of x and y
-        if self._proj != None:
-            x = self._proj(x)
         x_tiled = torch.tile(x[None, :],  (batch_size, 1, 1))
         y_tiled = torch.tile(y[:, None],  (1, batch_size, 1))
         # xy is [batch_size * batch_size, x_dim + y_dim]
-        xy_pairs = torch.reshape(torch.cat((x_tiled, y_tiled), dim=2), [batch_size * batch_size, -1])
+        xy_pairs = torch.reshape(torch.cat((x_tiled, y_tiled), dim=2), [
+                                 batch_size * batch_size, -1])
         # Compute scores for each x_i, y_j pair.
         scores = self._f(xy_pairs)
         return torch.transpose(torch.reshape(scores, [batch_size, batch_size]), 1, 0)
@@ -278,32 +309,43 @@ CRITICS = {
 }
 
 
-BASELINES= {
+BASELINES = {
     'constant': lambda: None,
     'unnormalized': UnnormalizedBaseline
 }
 
 
 class MIEstimator(object):
-    def __init__(self, critic_params, data_params, mi_params, opt_params, device):
+    def __init__(self, critic_params, data_params, mi_params, opt_params,
+                 device, proj_dim=None, proj_init=None):
         self.mi_params = mi_params
         self.device = device
         global device_
         device_ = self.device
-        self.critic = CRITICS[mi_params.get('critic', 'concat')](rho=None, **critic_params)
+        self.critic = CRITICS[mi_params.get('critic', 'concat')](
+            rho=None, **critic_params)
         self.critic.to(self.device)
-        print(self.critic._proj.weight.data.shape)
         # import pdb; pdb.set_trace()
+        if proj_dim != None:
+            self.proj = nn.Linear(data_params['dim'], proj_dim, bias=False)
+            if proj_init is not None:
+                self.proj.weight.data = torch.tensor(proj_init).float().T
+            self.proj.to(self.device)
+        else:
+            self.proj = None
         if mi_params.get('baseline', 'constant') == "constant":
             self.baseline = BASELINES[mi_params.get('baseline', 'constant')]()
         else:
-            self.baseline = BASELINES[mi_params.get('baseline', 'constant')](input_dim=data_params['dim'])
+            self.baseline = BASELINES[mi_params.get('baseline', 'constant')](
+                input_dim=data_params['dim'])
             self.baseline.to(self.device)
+        self.trainable_vars = list(self.critic.parameters())
         if self.baseline is not None:
-            self.trainable_vars = list(self.critic.parameters()) + list(self.baseline.parameters())
-        else:
-            self.trainable_vars = list(self.critic.parameters())
-        self.optimizer = optim.Adam(self.trainable_vars, lr=opt_params['learning_rate'])
+            self.trainable_vars += list(self.baseline.parameters())
+        if self.proj is not None:
+            self.trainable_vars += list(self.proj.parameters())
+        self.optimizer = optim.Adam(
+            self.trainable_vars, lr=opt_params['learning_rate'])
 
     def fit(self, dataloader, epochs=50):
         """
@@ -321,7 +363,10 @@ class MIEstimator(object):
 
                 x = x.float().to(self.device)
                 y = y.float().to(self.device)
-                mi = estimate_mutual_information(self.mi_params['estimator'], x, y, self.critic, self.baseline,
+                if self.proj is not None:
+                    x = self.proj(x)
+                mi = estimate_mutual_information(self.mi_params['estimator'], x, y,
+                                                 self.critic, self.baseline,
                                                  self.mi_params.get('alpha_logit'))
                 MI_loss = -mi
                 self.optimizer.zero_grad()
@@ -339,17 +384,20 @@ def train_estimator(critic_params, data_params, mi_params, opt_params, device=No
     if device is None:
         device = device_
     # Ground truth rho is only used by conditional critic
-    critic = CRITICS[mi_params.get('critic', 'concat')](rho=None, **critic_params)
+    critic = CRITICS[mi_params.get('critic', 'concat')](
+        rho=None, **critic_params)
     critic.to(device)
     # import pdb; pdb.set_trace()
     if mi_params.get('baseline', 'constant') == "constant":
         baseline = BASELINES[mi_params.get('baseline', 'constant')]()
     else:
-        baseline = BASELINES[mi_params.get('baseline', 'constant')](input_dim=data_params['dim'])
+        baseline = BASELINES[mi_params.get('baseline', 'constant')](
+            input_dim=data_params['dim'])
         baseline.to(device)
 
     if baseline is not None:
-        trainable_vars = list(critic.parameters()) + list(baseline.parameters())
+        trainable_vars = list(critic.parameters()) + \
+            list(baseline.parameters())
     else:
         trainable_vars = list(critic.parameters())
     optimizer = optim.Adam(trainable_vars, lr=opt_params['learning_rate'])
@@ -358,10 +406,12 @@ def train_estimator(critic_params, data_params, mi_params, opt_params, device=No
     for epoch in range(opt_params['n_epochs']):
         MI_epoch = 0
         for i in range(50):  # Mimic a dataset of size 50*Batch_Size
-            x, y = sample_correlated_gaussian(dim=data_params['dim'], rho=data_params['rho'], batch_size=data_params['batch_size'])
+            x, y = sample_correlated_gaussian(
+                dim=data_params['dim'], rho=data_params['rho'], batch_size=data_params['batch_size'])
             x = x.to(device)
             y = y.to(device)
-            mi = estimate_mutual_information(mi_params['estimator'], x, y, critic, baseline, mi_params.get('alpha_logit'))
+            mi = estimate_mutual_information(
+                mi_params['estimator'], x, y, critic, baseline, mi_params.get('alpha_logit'))
             MI_loss = -mi
 
             optimizer.zero_grad()
@@ -374,8 +424,9 @@ def train_estimator(critic_params, data_params, mi_params, opt_params, device=No
         history_MI.append(MI_epoch.detach().cpu().numpy())
         # lr_scheduler.step()
 
-        if (epoch+1) % 5 == 0:
-            print('==========> Epoch: {} ==========> MI: {:.4f}'.format(epoch+1, MI_epoch))
+        if (epoch + 1) % 5 == 0:
+            print('==========> Epoch: {} ==========> MI: {:.4f}'.format(
+                epoch + 1, MI_epoch))
 
     print('Finished Training')
     return np.asarray(history_MI)
@@ -383,13 +434,15 @@ def train_estimator(critic_params, data_params, mi_params, opt_params, device=No
 
 # Add interpolated bounds
 def sigmoid(x):
-  return 1/(1. + np.exp(-x))
+    return 1 / (1. + np.exp(-x))
 
 
 def sample_correlated_gaussian(rho=0.5, dim=20, data_size=10000):
     """Generate samples from a correlated Gaussian distribution."""
-    x, eps = torch.split(torch.normal(0, 1, size=(data_size, 2 * dim)), dim, dim=1)
-    y = rho * x + torch.sqrt(torch.tensor(1. - rho ** 2, dtype=torch.float32)) * eps
+    x, eps = torch.split(torch.normal(
+        0, 1, size=(data_size, 2 * dim)), dim, dim=1)
+    y = rho * x + torch.sqrt(torch.tensor(1. - rho **
+                                          2, dtype=torch.float32)) * eps
     return x, y
 
 
