@@ -351,6 +351,8 @@ class MIEstimator(object):
     def fit(self, dataloader, epochs=50):
         """
         :param x: array [num_data, dim_x] Representing a dataset of samples from P_X
+            - note x is passed in as [batch_size, T, dim_x] for eDCA where T is window size
+            - x is then reshaped to [batch_size, T * dim_x]
         :param y: array [num_data, dim_y] Representing a dataset of samples from P_Y|X=x
         :param epochs:
         :return:
@@ -363,9 +365,12 @@ class MIEstimator(object):
                 x, y = sample_batch
 
                 x = x.float().to(self.device)
+                batch_size = x.shape[0]
                 y = y.float().to(self.device)
                 if self.proj is not None:
                     x = self.proj(x)
+                x = x.reshape(batch_size, -1)
+                y = y.reshape(batch_size, -1)
                 mi = estimate_mutual_information(self.mi_params['estimator'], x, y,
                                                  self.critic, self.baseline,
                                                  self.mi_params.get('alpha_logit'))
@@ -376,7 +381,7 @@ class MIEstimator(object):
                 MI_epoch += mi
             MI_epoch /= (i_batch + 1)
             history_MI.append(MI_epoch.detach().cpu().numpy())
-        print('Finished Training')
+        # print('Finished Training')
         return np.asarray(history_MI)
 
 
